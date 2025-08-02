@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System Status</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+   <link href="https://fonts.googleapis.com/css2?family=Lato:ital,wght@0,100;0,300;0,400;0,700;0,900;1,100;1,300;1,400;1,700;1,900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Lato', sans-serif; }
+        .uptime-bar {
+            height: 20px;
+            border-radius: 2px;
+            transition: all 0.2s ease;
+        }
+        .uptime-bar:hover {
+            transform: scaleY(1.2);
+        }
+        .loading-shimmer {
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200% 100%;
+            animation: shimmer 2s infinite;
+        }
+        @keyframes shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+        .fade-in {
+            animation: fadeIn 0.5s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="max-w-4xl mx-auto px-4 py-8">
+        <div class="align-items-left mb-8">
+            <h1 class="text-3xl font-bold text-gray-900 mb-2">System Status</h1>
+            <p class="text-gray-600">Monitor the status of your services in real-time.</p>
+        </div>
+
+        <div id="overall-status" class="mb-8">
+            <div class="bg-[#247777] text-white rounded-lg p-4 text-center font-semibold text-lg">
+                <span class="inline-flex items-center">
+                    All Systems Operational
+                </span>
+            </div>
+        </div>
+
+        <!-- Status Cards Container -->
+        <div id="status-container" 
+             hx-get="/status" 
+             hx-trigger="load, every 30s"
+             hx-target="#status-cards"
+             hx-swap="innerHTML"
+             class="space-y-6">
+            
+            <!-- Loading State -->
+            <div id="loading-skeleton" class="space-y-6">
+                <div class="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
+                    <div class="loading-shimmer h-6 w-64 rounded mb-4"></div>
+                    <div class="flex gap-1 mb-4">
+                        <div class="loading-shimmer w-2 h-5 rounded"></div>
+                        <div class="loading-shimmer w-2 h-5 rounded"></div>
+                        <div class="loading-shimmer w-2 h-5 rounded"></div>
+                    </div>
+                    <div class="loading-shimmer h-4 w-32 rounded"></div>
+                </div>
+            </div>
+
+            <!-- Dynamic Status Cards -->
+            <div id="status-cards"></div>
+        </div>
+
+        <!-- Historical Uptime Notice -->
+        <div class="text-center mt-8 text-sm text-gray-500">
+            <p>Uptime over the past 90 days. 
+                <a href="#" class="text-blue-500 hover:text-blue-700 underline">View historical uptime.</a>
+            </p>
+        </div>
+
+        <!-- Footer -->
+        <div class="text-center mt-12 pt-8 border-t border-gray-200 w-full fixed left-0 bottom-8 bg-gray-50 z-10">
+
+        
+            <p class="text-gray-500 text-sm">
+            Powered by Uptime Monitor | 
+            <span id="last-updated" class="text-gray-400">Last updated: Loading...</span>
+            </p>
+        </div>
+    </div>
+
+    <script>
+        let servicesData = {};
+        let overallStatus = 'operational';
+
+        document.addEventListener('htmx:beforeRequest', function(evt) {
+            if (evt.detail.target.id === 'status-cards') {
+                if (Object.keys(servicesData).length === 0) {
+                    document.getElementById('loading-skeleton').style.display = 'block';
+                }
+            }
+        });
+
+        document.addEventListener('htmx:afterRequest', function(evt) {
+            if (evt.detail.target.id === 'status-cards') {
+                document.getElementById('loading-skeleton').style.display = 'none';
+                updateLastUpdated();
+                
+                const cards = document.querySelectorAll('#status-cards .bg-white');
+                cards.forEach(card => card.classList.add('fade-in'));
+            }
+        });
+
+        function renderStatusCards(services) {
+            servicesData = services;
+            let allOperational = true;
+            let html = '';
+            let chartIds = [];
+            let idx = 0;
+            for (const [url, service] of Object.entries(services)) {
+                const uptime = service.total_checks > 0 
+                    ? (service.success_checks / service.total_checks * 100).toFixed(2)
+                    : 0;
+                const isUp = service.is_up;
+                if (!isUp) allOperational = false;
+                const statusText = isUp ? 'Operational' : 'Degraded Performance';
+                const statusBg = isUp ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700';
+                const uptimeBars = generateUptimeBars(service, 45);
+                const chartId = 'resp-chart-' + btoa(url).replace(/=/g, '');
+                chartIds.push({ url, chartId });
+                const collapseId = 'collapse-' + idx;
+                html += `
+                    <div class="bg-white rounded-lg shadow-sm p-6 border border-gray-200 hover:shadow-md transition-shadow mb-8">
+                        <div class="flex items-center justify-between mb-4 cursor-pointer" onclick="toggleCollapse('${collapseId}', this)">
+                            <div class="flex items-center gap-3">
+                                <div class="w-3 h-3 rounded-full ${isUp ? 'bg-green-400' : 'bg-red-400'}"></div>
+                                <h3 class="font-semibold text-lg text-gray-800 flex items-center">
+                                    <span>${getServiceName(url)}</span>
+                                    <svg class="ml-2 w-5 h-5 transition-transform duration-200 chevron-icon" data-collapse="${collapseId}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                                </h3>
+                            </div>
+                            <span class="px-3 py-1 rounded-full ${statusBg} text-xs font-bold uppercase tracking-wide">
+                                ${statusText}
+                            </span>
+                        </div>
+                        <div class="flex items-center gap-2 mb-4">
+                            <div class="flex gap-[2px] flex-1">
+                                ${uptimeBars}
+                            </div>
+                            <span class="text-xs text-gray-500 ml-4">90 days ago</span>
+                            <span class="text-xs text-gray-500 ml-auto">Today</span>
+                        </div>
+                        <div class="flex items-center justify-between text-sm text-gray-600">
+                            <span class="font-medium">${uptime}% uptime</span>
+                            <span>Last check: ${formatTime(service.last_check)}</span>
+                            <span>Response: ${service.response_time_ms}ms</span>
+                            ${service.last_error ? `<span class="text-red-500 text-xs">${service.last_error}</span>` : ''}
+                        </div>
+                        <div id="${collapseId}" class="mt-4 hidden">
+                            <canvas id="${chartId}" height="80"></canvas>
+                            <div class="mt-3 pt-3 border-t border-gray-100">
+                                <div class="flex justify-between text-xs text-gray-500">
+                                    <span>Total checks: ${service.total_checks}</span>
+                                    <span>Success rate: ${service.total_checks > 0 ? ((service.success_checks / service.total_checks) * 100).toFixed(1) : 0}%</span>
+                                    <span>Status code: ${service.status_code || 'N/A'}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                idx++;
+            }
+            updateOverallStatus(allOperational);
+            document.getElementById('status-cards').innerHTML = html;
+            fetch('/response_times').then(r => r.json()).then(data => {
+                chartIds.forEach(({ url, chartId }) => {
+                    const points = (data[url] || []);
+                    const ctx = document.getElementById(chartId);
+                    if (!ctx) return;
+                    const labels = points.map(p => new Date(p.timestamp * 1000).toLocaleTimeString());
+                    const values = points.map(p => p.response_ms);
+                    new Chart(ctx.getContext('2d'), {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: 'Resp. Time (ms)',
+                                data: values,
+                                borderColor: '#247777',
+                                backgroundColor: 'rgba(36,119,119,0.10)',
+                                fill: true,
+                                tension: 0.3,
+                                pointRadius: 0,
+                                borderWidth: 2,
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: { legend: { display: false } },
+                            scales: {
+                                x: { display: false },
+                                y: { display: true, title: { display: true, text: 'Resp. Time (ms)' }, beginAtZero: true }
+                            }
+                        }
+                    });
+                });
+            });
+        }
+        function toggleCollapse(id, headerEl) {
+            var el = document.getElementById(id);
+            if (el) {
+                el.classList.toggle('hidden');
+                var chevron = headerEl.querySelector('.chevron-icon');
+                if (chevron) {
+                    chevron.style.transform = el.classList.contains('hidden') ? '' : 'rotate(180deg)';
+                }
+            }
+        }
+
+        function generateUptimeBars(service, count) {
+            let bars = '';
+            const uptimeRatio = service.total_checks > 0 ? service.success_checks / service.total_checks : 1;
+            
+            for (let i = 0; i < count; i++) {
+                const isUp = i < count * uptimeRatio;
+                const color = isUp ? 'bg-green-400' : 'bg-red-400';
+                bars += `<div class="uptime-bar w-1.5 ${color} rounded cursor-pointer" title="${isUp ? 'Operational' : 'Downtime'} - Day ${count - i}"></div>`;
+            }
+            
+            return bars;
+        }
+
+        function getServiceName(url) {
+            try {
+                const domain = new URL(url).hostname;
+                return domain.charAt(0).toUpperCase() + domain.slice(1).replace(/\./g, ' ');
+            } catch {
+                return url;
+            }
+        }
+
+        function formatTime(timestamp) {
+            if (!timestamp) return 'Never';
+            const date = new Date(timestamp);
+            return date.toLocaleString();
+        }
+
+        function updateOverallStatus(allOperational) {
+            const banner = document.getElementById('overall-status');
+            const statusElement = banner.querySelector('div');
+            statusElement.className = 'bg-[#247777] text-white rounded-lg p-4 text-center font-semibold text-lg';
+            statusElement.innerHTML = `
+                <span class="inline-flex items-center">
+                    All Systems Operational
+                </span>
+            `;
+        }
+
+        function updateLastUpdated() {
+            document.getElementById('last-updated').textContent = 
+                `Last updated: ${new Date().toLocaleTimeString()}`;
+        }
+
+        document.addEventListener('htmx:afterRequest', function(evt) {
+            if (evt.detail.xhr.status === 200 && evt.detail.target.id === 'status-cards') {
+                try {
+                    const data = JSON.parse(evt.detail.xhr.responseText);
+                    renderStatusCards(data);
+                } catch (e) {
+                    console.error('Failed to parse status response:', e);
+                }
+            }
+        });
+
+        updateLastUpdated();
+    </script>
+</body>
+</html>

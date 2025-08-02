@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  status-checker:
+    build:
+      context: ./src
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./uptime.db:/app/uptime.db
+    environment:
+      - CHECK_INTERVAL=10s
+      - SERVICES=https://google.com
