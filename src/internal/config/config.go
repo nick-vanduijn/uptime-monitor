@@ -10,6 +10,8 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const DefaultServiceURL = "https://github.com"
+
 type Config struct {
 	CheckInterval  time.Duration
 	ReportInterval time.Duration
@@ -51,12 +53,35 @@ func LoadConfig() (*Config, error) {
 		EmailTo:        getEnvStringSlice("EMAIL_TO", []string{}),
 		WebhookURL:     getEnvString("WEBHOOK_URL", ""),
 		Services: getEnvStringSlice("SERVICES", []string{
-			"https://google.com",
-		}), 
+			getEnvString("DEFAULT_SERVICE_URL", DefaultServiceURL),
+		}),
 		MaxRetries:     getEnvInt("MAX_RETRIES", 2),
 		RetryDelay:     getEnvDuration("RETRY_DELAY", 1*time.Second),
 		TLSSkipVerify:  getEnvBool("TLS_SKIP_VERIFY", false),
 		MaxConcurrency: getEnvInt("MAX_CONCURRENCY", 10),
+	}
+
+	emailEnabled := cfg.EmailSMTPHost != "" || cfg.EmailUsername != "" || cfg.EmailPassword != "" || cfg.EmailFrom != "" || len(cfg.EmailTo) > 0
+	if emailEnabled {
+		missing := []string{}
+		if cfg.EmailSMTPHost == "" {
+			missing = append(missing, "EMAIL_SMTP_HOST")
+		}
+		if cfg.EmailUsername == "" {
+			missing = append(missing, "EMAIL_USERNAME")
+		}
+		if cfg.EmailPassword == "" {
+			missing = append(missing, "EMAIL_PASSWORD")
+		}
+		if cfg.EmailFrom == "" {
+			missing = append(missing, "EMAIL_FROM")
+		}
+		if len(cfg.EmailTo) == 0 {
+			missing = append(missing, "EMAIL_TO")
+		}
+		if len(missing) > 0 {
+			return nil, fmt.Errorf("email notification enabled but missing required fields: %v", strings.Join(missing, ", "))
+		}
 	}
 
 	return cfg, nil

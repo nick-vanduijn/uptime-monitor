@@ -18,7 +18,6 @@ import (
 	"uptime-monitor/models"
 )
 
-
 type UptimeMonitor struct {
 	config    *config.Config
 	services  map[string]*models.ServiceStatus
@@ -26,12 +25,12 @@ type UptimeMonitor struct {
 	dbManager *database.DBManager
 	logger    *slog.Logger
 	alertChan chan models.Alert
-	semaphore chan struct{} 
-	mutex     sync.RWMutex  
+	semaphore chan struct{}
+	mutex     sync.RWMutex
 	ctx       context.Context
 	cancel    context.CancelFunc
+	routines  sync.WaitGroup
 }
-
 
 func NewUptimeMonitor(cfg *config.Config, logger *slog.Logger) (*UptimeMonitor, error) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -62,7 +61,7 @@ func NewUptimeMonitor(cfg *config.Config, logger *slog.Logger) (*UptimeMonitor, 
 		client:    client,
 		dbManager: dbManager,
 		logger:    logger,
-		alertChan: make(chan models.Alert, 100), 
+		alertChan: make(chan models.Alert, 100),
 		semaphore: make(chan struct{}, cfg.MaxConcurrency),
 		ctx:       ctx,
 		cancel:    cancel,
@@ -70,10 +69,9 @@ func NewUptimeMonitor(cfg *config.Config, logger *slog.Logger) (*UptimeMonitor, 
 
 	if err := um.loadServices(); err != nil {
 		logger.Error("Failed to load services from database", "error", err)
-		
+		return nil, fmt.Errorf("failed to load services: %w", err)
 	}
 
-	
 	for _, serviceURL := range cfg.Services {
 		if err := um.AddService(serviceURL); err != nil {
 			logger.Error("Failed to add service from config", "url", serviceURL, "error", err)
@@ -82,7 +80,6 @@ func NewUptimeMonitor(cfg *config.Config, logger *slog.Logger) (*UptimeMonitor, 
 
 	return um, nil
 }
-
 
 func (um *UptimeMonitor) loadServices() error {
 	dbServices, err := um.dbManager.LoadServicesFromDB()
@@ -100,14 +97,12 @@ func (um *UptimeMonitor) loadServices() error {
 	return nil
 }
 
-
 func (um *UptimeMonitor) AddService(url string) error {
 	um.mutex.Lock()
 	defer um.mutex.Unlock()
 
 	if _, exists := um.services[url]; exists {
-		
-		return um.dbManager.AddServiceToDB(um.services[url]) 
+		return fmt.Errorf("service %s already exists", url)
 	}
 
 	service := &models.ServiceStatus{
@@ -127,16 +122,15 @@ func (um *UptimeMonitor) AddService(url string) error {
 	return nil
 }
 
-
 func (um *UptimeMonitor) CheckService(url string) error {
-	
+
 	select {
 	case <-um.ctx.Done():
-		return um.ctx.Err() 
+		return um.ctx.Err()
 	case um.semaphore <- struct{}{}:
-		
+
 	}
-	defer func() { <-um.semaphore }() 
+	defer func() { <-um.semaphore }()
 
 	um.mutex.RLock()
 	service, exists := um.services[url]
@@ -146,7 +140,7 @@ func (um *UptimeMonitor) CheckService(url string) error {
 		return fmt.Errorf("service %s not found in monitor", url)
 	}
 
-	service.Mutex.Lock() 
+	service.Mutex.Lock()
 	defer service.Mutex.Unlock()
 
 	var lastErr error
@@ -169,7 +163,7 @@ func (um *UptimeMonitor) CheckService(url string) error {
 		if err != nil {
 			lastErr = fmt.Errorf("failed to create request: %w", err)
 			um.logger.Debug("Check attempt failed (request creation)", "url", url, "attempt", attempt+1, "error", lastErr)
-			continue 
+			continue
 		}
 
 		resp, err := um.client.Do(req)
@@ -178,23 +172,21 @@ func (um *UptimeMonitor) CheckService(url string) error {
 		if err != nil {
 			lastErr = err
 			um.logger.Debug("Check attempt failed (HTTP request)", "url", url, "attempt", attempt+1, "error", err)
-			continue 
+			continue
 		}
-
+		defer resp.Body.Close()
 		statusCode = resp.StatusCode
-		resp.Body.Close()
 
 		if statusCode >= 200 && statusCode < 400 {
 			success = true
-			lastErr = nil 
-			break        
+			lastErr = nil
+			break
 		} else {
 			lastErr = fmt.Errorf("HTTP status %d", statusCode)
 			um.logger.Debug("Check attempt failed (bad status code)", "url", url, "attempt", attempt+1, "status", statusCode)
 		}
 	}
 
-	
 	previousStatus := service.IsUp
 	service.LastCheck = time.Now()
 	service.ResponseTime = duration.Milliseconds()
@@ -222,7 +214,7 @@ func (um *UptimeMonitor) CheckService(url string) error {
 		if lastErr != nil {
 			service.LastError = lastErr.Error()
 		} else {
-			service.LastError = "unknown error" 
+			service.LastError = "unknown error"
 		}
 
 		if previousStatus {
@@ -235,7 +227,6 @@ func (um *UptimeMonitor) CheckService(url string) error {
 		}
 	}
 
-	
 	if success && duration > 5*time.Second {
 		um.alertChan <- models.Alert{
 			ServiceURL: url,
@@ -245,9 +236,10 @@ func (um *UptimeMonitor) CheckService(url string) error {
 		}
 	}
 
-	
-	um.dbManager.UpdateServiceInDB(service) 
-	um.dbManager.RecordCheckHistory(service.ID, service.IsUp, service.ResponseTime, service.StatusCode, service.LastError)
+	um.dbManager.UpdateServiceInDB(service)
+	if err := um.dbManager.RecordCheckHistory(service.ID, service.IsUp, service.ResponseTime, service.StatusCode, service.LastError); err != nil {
+		um.logger.Error("Failed to record check history", "url", url, "error", err)
+	}
 
 	statusStr := "UP"
 	if !success {
@@ -266,7 +258,6 @@ func (um *UptimeMonitor) CheckService(url string) error {
 	return lastErr
 }
 
-
 func (um *UptimeMonitor) StartMonitoring() {
 	um.logger.Info("Starting uptime monitoring",
 		"check_interval", um.config.CheckInterval,
@@ -274,14 +265,25 @@ func (um *UptimeMonitor) StartMonitoring() {
 		"max_concurrency", um.config.MaxConcurrency,
 	)
 
-	go um.processAlerts()
-	go um.startHTTPServer()
-	go um.startStatusReporting()
+	um.routines.Add(1)
+	go func() {
+		defer um.routines.Done()
+		um.processAlerts()
+	}()
+	um.routines.Add(1)
+	go func() {
+		defer um.routines.Done()
+		um.startHTTPServer()
+	}()
+	um.routines.Add(1)
+	go func() {
+		defer um.routines.Done()
+		um.startStatusReporting()
+	}()
 
 	ticker := time.NewTicker(um.config.CheckInterval)
 	defer ticker.Stop()
 
-	
 	um.checkAllServices()
 
 	for {
@@ -294,7 +296,6 @@ func (um *UptimeMonitor) StartMonitoring() {
 		}
 	}
 }
-
 
 func (um *UptimeMonitor) checkAllServices() {
 	um.mutex.RLock()
@@ -319,7 +320,6 @@ func (um *UptimeMonitor) checkAllServices() {
 	um.logger.Debug("All services checked in this interval")
 }
 
-
 func (um *UptimeMonitor) processAlerts() {
 	for {
 		select {
@@ -327,7 +327,7 @@ func (um *UptimeMonitor) processAlerts() {
 			um.logger.Info("Alert processing routine stopped by context cancellation")
 			return
 		case alert, ok := <-um.alertChan:
-			if !ok { 
+			if !ok {
 				um.logger.Info("Alert channel closed, stopping alert processing")
 				return
 			}
@@ -343,7 +343,6 @@ func (um *UptimeMonitor) processAlerts() {
 		}
 	}
 }
-
 
 func (um *UptimeMonitor) sendEmailAlert(alert models.Alert) {
 	subject := fmt.Sprintf("Uptime Monitor Alert: %s - %s", strings.ToUpper(alert.Type), alert.ServiceURL)
@@ -364,7 +363,6 @@ func (um *UptimeMonitor) sendEmailAlert(alert models.Alert) {
 		um.logger.Info("Email alert sent", "to", um.config.EmailTo, "type", alert.Type, "service", alert.ServiceURL)
 	}
 }
-
 
 func (um *UptimeMonitor) sendWebhookAlert(alert models.Alert) {
 	payload, err := json.Marshal(alert)
@@ -391,14 +389,13 @@ func (um *UptimeMonitor) sendWebhookAlert(alert models.Alert) {
 		um.logger.Info("Webhook alert sent", "status", resp.StatusCode, "type", alert.Type, "service", alert.ServiceURL)
 	} else {
 		um.logger.Error("Webhook alert failed", "status", resp.StatusCode, "type", alert.Type, "service", alert.ServiceURL)
-		
+
 	}
 }
 
-
 func (um *UptimeMonitor) startHTTPServer() {
 	mux := http.NewServeMux()
-	handlers := handler.NewHTTPHandlers(um, &um.mutex) 
+	handlers := handler.NewHTTPHandlers(um, &um.mutex)
 	handlers.RegisterRoutes(mux)
 
 	server := &http.Server{
@@ -409,9 +406,9 @@ func (um *UptimeMonitor) startHTTPServer() {
 	um.logger.Info("Starting HTTP server", "port", um.config.HTTPPort)
 
 	go func() {
-		<-um.ctx.Done() 
+		<-um.ctx.Done()
 		um.logger.Info("Shutting down HTTP server...")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) 
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
 			um.logger.Error("HTTP server graceful shutdown failed", "error", err)
@@ -425,16 +422,20 @@ func (um *UptimeMonitor) startHTTPServer() {
 	}
 }
 
-
 func (um *UptimeMonitor) GetAllServices() map[string]*models.ServiceStatus {
-	return um.services
-}
+	um.mutex.RLock()
+	defer um.mutex.RUnlock()
 
+	services := make(map[string]*models.ServiceStatus, len(um.services))
+	for k, v := range um.services {
+		services[k] = v
+	}
+	return services
+}
 
 func (um *UptimeMonitor) GetServiceResponseHistory(serviceID int, limit int) ([]models.ResponseTimePoint, error) {
 	return um.dbManager.GetResponseTimeHistory(serviceID, limit)
 }
-
 
 func (um *UptimeMonitor) startStatusReporting() {
 	if um.config.ReportInterval <= 0 {
@@ -455,7 +456,6 @@ func (um *UptimeMonitor) startStatusReporting() {
 		}
 	}
 }
-
 
 func (um *UptimeMonitor) printStatusReport() {
 	um.mutex.RLock()
@@ -497,19 +497,12 @@ func (um *UptimeMonitor) printStatusReport() {
 	)
 }
 
-
 func (um *UptimeMonitor) Close() error {
 	um.logger.Info("Shutting down uptime monitor...")
 
-	
 	um.cancel()
+	um.routines.Wait()
 
-	
-	
-	
-	time.Sleep(1 * time.Second)
-
-	
 	if um.dbManager != nil {
 		if err := um.dbManager.Close(); err != nil {
 			um.logger.Error("Failed to close database", "error", err)
@@ -517,7 +510,6 @@ func (um *UptimeMonitor) Close() error {
 		}
 	}
 
-	
 	close(um.alertChan)
 
 	um.logger.Info("Uptime monitor shutdown complete")

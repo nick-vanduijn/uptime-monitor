@@ -1,6 +1,7 @@
 version: '3.8'
 services:
-  status-checker:
+  uptime-monitor:
+    image: uptime-monitor
     build:
       context: ./src
       dockerfile: Dockerfile
