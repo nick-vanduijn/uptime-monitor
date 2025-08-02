@@ -10,12 +10,10 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-
 type DBManager struct {
 	db     *sql.DB
 	logger *slog.Logger
 }
-
 
 func NewDBManager(dbPath string, logger *slog.Logger) (*DBManager, error) {
 	db, err := sql.Open("sqlite3", dbPath)
@@ -30,7 +28,6 @@ func NewDBManager(dbPath string, logger *slog.Logger) (*DBManager, error) {
 
 	return &DBManager{db: db, logger: logger}, nil
 }
-
 
 func initSchema(db *sql.DB) error {
 	schema := `
@@ -67,7 +64,6 @@ func initSchema(db *sql.DB) error {
 	_, err := db.Exec(schema)
 	return err
 }
-
 
 func (dm *DBManager) LoadServicesFromDB() (map[string]*models.ServiceStatus, error) {
 	services := make(map[string]*models.ServiceStatus)
@@ -116,8 +112,6 @@ func (dm *DBManager) LoadServicesFromDB() (map[string]*models.ServiceStatus, err
 	return services, rows.Err()
 }
 
-
-
 func (dm *DBManager) AddServiceToDB(service *models.ServiceStatus) error {
 	result, err := dm.db.Exec(`
 		INSERT OR IGNORE INTO services (url, created_at, updated_at) 
@@ -133,7 +127,6 @@ func (dm *DBManager) AddServiceToDB(service *models.ServiceStatus) error {
 		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
 
-	
 	if rowsAffected == 0 {
 		var id int
 		err := dm.db.QueryRow("SELECT id FROM services WHERE url = ?", service.URL).Scan(&id)
@@ -142,7 +135,7 @@ func (dm *DBManager) AddServiceToDB(service *models.ServiceStatus) error {
 		}
 		service.ID = id
 	} else {
-		
+
 		id, err := result.LastInsertId()
 		if err != nil {
 			return fmt.Errorf("failed to get last insert ID: %w", err)
@@ -153,10 +146,8 @@ func (dm *DBManager) AddServiceToDB(service *models.ServiceStatus) error {
 	return nil
 }
 
-
 func (dm *DBManager) UpdateServiceInDB(service *models.ServiceStatus) {
-	
-	
+
 	_, err := dm.db.Exec(`
 		UPDATE services 
 		SET is_up = ?, last_check = ?, response_time_ms = ?, status_code = ?,
@@ -172,8 +163,7 @@ func (dm *DBManager) UpdateServiceInDB(service *models.ServiceStatus) {
 	}
 }
 
-
-func (dm *DBManager) RecordCheckHistory(serviceID int, isUp bool, responseTimeMs int64, statusCode int, errorMsg string) {
+func (dm *DBManager) RecordCheckHistory(serviceID int, isUp bool, responseTimeMs int64, statusCode int, errorMsg string) error {
 	_, err := dm.db.Exec(`
 		INSERT INTO check_history (service_id, is_up, response_time_ms, status_code, error_message)
 		VALUES (?, ?, ?, ?, ?)
@@ -181,9 +171,12 @@ func (dm *DBManager) RecordCheckHistory(serviceID int, isUp bool, responseTimeMs
 
 	if err != nil {
 		dm.logger.Error("Failed to record check history", "error", err, "service_id", serviceID)
-	}
-}
 
+		return fmt.Errorf("failed to record check history: %w", err)
+
+	}
+	return nil
+}
 
 func (dm *DBManager) GetResponseTimeHistory(serviceID int, limit int) ([]models.ResponseTimePoint, error) {
 	query := `
@@ -208,13 +201,12 @@ func (dm *DBManager) GetResponseTimeHistory(serviceID int, limit int) ([]models.
 		}
 		history = append(history, models.ResponseTimePoint{Timestamp: timestamp.Unix(), ResponseMs: responseMs})
 	}
-	
+
 	for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
 		history[i], history[j] = history[j], history[i]
 	}
 	return history, rows.Err()
 }
-
 
 func (dm *DBManager) Close() error {
 	return dm.db.Close()
