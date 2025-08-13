@@ -1,0 +1,49 @@
+# Go build artifacts
+/bin/
+*.exe
+*.out
+*.test
+
+# Dependency directories
+vendor/
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment/config
+.env
+.env.*
+
+# Database
+*.db
+
+# Node/npm (if frontend assets)
+node_modules/
+
+# Coverage
+coverage*
+*.coverprofile
+
+# Docker
+*.pid
+
+# Misc
+*.bak
+*.tmp
+
+# Frontend build
+/dist/
+/build/
+
+# Ignore generated files
+*.generated.*
