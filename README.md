@@ -2,6 +2,8 @@
 
 A modern, container-ready uptime and response time monitoring tool with a beautiful web dashboard.
 
+![Preview](images/preview.png)
+
 ## Features
 - Monitors multiple HTTP(S) endpoints (default: Google, GitHub, Example, Cloudflare)
 - Tracks uptime, response time, and error rates
